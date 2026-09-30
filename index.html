@@ -67,6 +67,14 @@ button:focus-visible{outline:2px solid var(--yellow);outline-offset:2px}
         <button id="bRef">Actualizar</button>
         <button id="bGeo" class="on" aria-pressed="true">Geocercas</button>
       </div>
+      <div class="bar" role="group" aria-label="Transmisión">
+        <button data-f="all">Todas</button>
+        <button data-f="1">Sin transmitir +1 día</button>
+        <button data-f="2">+2 días</button>
+        <button data-f="3">+3 días</button>
+        <button data-f="7">+7 días</button>
+        <button id="bCopy" hidden>Copiar lista</button>
+      </div>
       <div class="legend"><span><i class="dot mov"></i>En movimiento</span><span><i class="dot stop"></i>Detenida</span><span><i class="dot old"></i>Sin señal +15 min</span></div>
     </div>
     <div id="msgs"></div>
@@ -78,21 +86,23 @@ button:focus-visible{outline:2px solid var(--yellow);outline-offset:2px}
 /* Enlace esperado: .../#u=PLACA~TOKEN,PLACA~TOKEN&n=Nombre del grupo
    Los TOKEN son los de los enlaces del Localizador por unidad (solo lectura, solo posición). */
 const API="https://hst-api.wialon.com/wialon/ajax.html";
-const REFRESH=20000, OLD=15*60;
+const OLD=15*60;
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function readHash(){
   const h=new URLSearchParams(location.hash.replace(/^#/,""));
   const units=(h.get("u")||"").split(",").map(x=>x.split("~")).filter(a=>a[0]&&a[1]).map(([p,t])=>({p:p.trim(),t:t.trim()}));
-  return {units,name:h.get("n")||""};
+  return {units,name:h.get("n")||"",f:h.get("f")||"",d:+(h.get("d")||0)};
 }
-const {units:U,name}=readHash();
+const {units:U,name,f:F0,d:D0}=readHash();
+const FL={on:F0==="sin",days:[1,2,3,7].includes(D0)?D0:2};
 if(name){$("title").textContent=name;document.title=name;}
 const map=L.map("map",{zoomControl:true}).setView([-17.1,-70.9],9);
 const osm=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap"}).addTo(map);
 const sat=L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"Esri"});
 let satOn=false;
 $("bSat").onclick=()=>{satOn=!satOn;if(satOn){map.removeLayer(osm);sat.addTo(map);}else{map.removeLayer(sat);osm.addTo(map);}$("bSat").classList.toggle("on",satOn);};
+const REF=U.length>30?60000:20000;
 const S=U.map(u=>({...u,sid:null,pos:null,err:"",mk:null,nm:""}));
 let fitted=false,sel=-1;
 
@@ -142,34 +152,52 @@ async function poll(u){
 }
 const stateOf=u=>{if(u.err||!u.pos)return"err";const age=Date.now()/1000-u.pos.t;if(age>OLD)return"old";return u.pos.s>3?"mov":"stop";};
 const ago=t=>{const s=Math.max(0,Math.round(Date.now()/1000-t));if(s<60)return`hace ${s} s`;if(s<3600)return`hace ${Math.round(s/60)} min`;if(s<86400)return`hace ${Math.round(s/3600)} h`;return`hace ${Math.round(s/86400)} d`;};
+const ageS=u=>u.pos?Date.now()/1000-u.pos.t:Infinity;
+const silent=u=>!u.err||u.err==="Sin posición registrada"?(u.err==="Sin posición registrada"||(u.pos&&ageS(u)>FL.days*86400)):false;
+const visible=u=>!FL.on||silent(u);
+const dias=u=>u.pos?Math.floor(ageS(u)/86400):null;
+function fmtFecha(t){return new Date(t*1000).toLocaleString("es-PE",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});}
 function draw(){
   const pts=[];
   S.forEach((u,i)=>{
-    const st=stateOf(u);
-    if(u.pos){const ll=[u.pos.y,u.pos.x];pts.push(ll);
-      const html=`<div class="lbl ${st}">${esc(u.p)}</div>`;
+    const st=stateOf(u),vis=visible(u);
+    if(u.pos){const ll=[u.pos.y,u.pos.x];if(vis)pts.push(ll);
+      const html=`<div class="lbl ${st}">${esc(u.p)}${FL.on&&dias(u)!=null?` · ${dias(u)} d`:""}</div>`;
       const icon=L.divIcon({html,className:"",iconSize:null,iconAnchor:[20,10]});
-      if(!u.mk){u.mk=L.marker(ll,{icon}).addTo(map);u.mk.on("click",()=>pick(i,false));}
+      if(!u.mk){u.mk=L.marker(ll,{icon});u.mk.on("click",()=>pick(i,false));}
       else{u.mk.setLatLng(ll);u.mk.setIcon(icon);}
-      u.mk.bindPopup(`<b>${esc(u.p)}</b><br>${esc(u.nm)}<br>${u.pos.s} km/h, ${ago(u.pos.t)}<br><a href="https://www.google.com/maps?q=${u.pos.y},${u.pos.x}" target="_blank" rel="noopener">Abrir en Google Maps</a>`);
+      if(vis&&!map.hasLayer(u.mk))u.mk.addTo(map);if(!vis&&map.hasLayer(u.mk))map.removeLayer(u.mk);
+      u.mk.bindPopup(`<b>${esc(u.p)}</b><br>${esc(u.nm)}<br>${u.pos.s} km/h, ${ago(u.pos.t)}<br>Último reporte: ${fmtFecha(u.pos.t)}<br><a href="https://www.google.com/maps?q=${u.pos.y},${u.pos.x}" target="_blank" rel="noopener">Abrir en Google Maps</a>`);
     }
   });
-  $("list").innerHTML=S.map((u,i)=>{const st=stateOf(u);
-    const txt=u.err?esc(u.err):u.pos?`${st==="mov"?"En movimiento":st==="stop"?"Detenida":"Sin señal"}, ${ago(u.pos.t)}`:"Cargando…";
-    return `<div class="u${i===sel?" sel":""}" data-i="${i}" tabindex="0" role="button"><i class="dot ${u.pos||u.err?st:""}"></i><div class="pl">${esc(u.p)}</div><div class="sp">${u.pos&&!u.err?u.pos.s+" km/h":""}</div><div class="st">${txt}</div></div>`;}).join("");
+  let idx=S.map((u,i)=>i).filter(i=>visible(S[i]));
+  if(FL.on)idx.sort((a,b)=>ageS(S[b])-ageS(S[a]));
+  $("list").innerHTML=idx.length?idx.map(i=>{const u=S[i],st=stateOf(u);
+    const txt=u.err?esc(u.err):u.pos?(FL.on?`Último reporte ${fmtFecha(u.pos.t)} (${ago(u.pos.t)})`:`${st==="mov"?"En movimiento":st==="stop"?"Detenida":"Sin señal"}, ${ago(u.pos.t)}`):"Cargando…";
+    const right=FL.on?(dias(u)!=null?dias(u)+" días":"-"):(u.pos&&!u.err?u.pos.s+" km/h":"");
+    return `<div class="u${i===sel?" sel":""}" data-i="${i}" tabindex="0" role="button"><i class="dot ${u.pos||u.err?st:""}"></i><div class="pl">${esc(u.p)}</div><div class="sp">${right}</div><div class="st">${txt}</div></div>`;}).join(""):`<div class="st" style="padding:12px">${FL.on?`Ninguna unidad lleva más de ${FL.days} día(s) sin transmitir.`:"Cargando…"}</div>`;
   $("list").querySelectorAll(".u").forEach(el=>{el.onclick=()=>pick(+el.dataset.i,true);el.onkeydown=e=>{if(e.key==="Enter")pick(+el.dataset.i,true);};});
-  const ok=S.filter(u=>u.pos&&!u.err).length,mov=S.filter(u=>stateOf(u)==="mov").length;
-  $("sub").textContent=`${S.length} unidad(es), ${ok} con posición, ${mov} en movimiento. Se actualiza cada 20 s (${new Date().toLocaleTimeString("es-PE",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}).`;
-  if(!fitted&&pts.length){fit();fitted=true;}
+  document.querySelectorAll("[data-f]").forEach(b=>b.classList.toggle("on",FL.on?b.dataset.f===String(FL.days):b.dataset.f==="all"));
+  $("bCopy").hidden=!FL.on||!idx.length;
+  const ok=S.filter(u=>u.pos&&!u.err).length,mov=S.filter(u=>stateOf(u)==="mov").length,loaded=S.filter(u=>u.pos||u.err).length;
+  const hora=new Date().toLocaleTimeString("es-PE",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+  $("sub").textContent=FL.on?`${idx.length} de ${S.length} unidades sin transmitir hace más de ${FL.days} día(s)${loaded<S.length?` (revisadas ${loaded} de ${S.length})`:""}. Actualizado ${hora}`
+    :`${S.length} unidad(es), ${ok} con posición, ${mov} en movimiento. Se actualiza cada ${Math.round(REF/1000)} s (${hora}).`;
+  if(pts.length&&(!fitted||refit)){fit();fitted=true;refit=false;}
   const conn=S.length&&S.every(u=>u.err==="No se pudo conectar con Wialon");
   $("msgs").innerHTML=conn?`<div class="msg">No se pudo conectar con Wialon desde esta página. Revisa tu conexión; si sigue igual, avisa para ajustar la página.</div>`:"";
 }
-function fit(){const pts=S.filter(u=>u.pos).map(u=>[u.pos.y,u.pos.x]);if(!pts.length)return;if(pts.length===1)map.setView(pts[0],14);else map.fitBounds(pts,{padding:[40,40],maxZoom:15});}
+let refit=false;
+function fit(){const pts=S.filter(u=>u.pos&&visible(u)).map(u=>[u.pos.y,u.pos.x]);if(!pts.length)return;if(pts.length===1)map.setView(pts[0],14);else map.fitBounds(pts,{padding:[40,40],maxZoom:15});}
+document.querySelectorAll("[data-f]").forEach(b=>b.onclick=()=>{if(b.dataset.f==="all")FL.on=false;else{FL.on=true;FL.days=+b.dataset.f;}refit=true;draw();});
+$("bCopy").onclick=async()=>{const rows=S.filter(u=>visible(u)).sort((a,b)=>ageS(b)-ageS(a)).map(u=>[u.p,u.pos?fmtFecha(u.pos.t):"Sin posición",dias(u)??"",u.pos?`${u.pos.y.toFixed(5)},${u.pos.x.toFixed(5)}`:""].join("\t"));
+  const txt=["Placa\tÚltimo reporte\tDías sin transmitir\tÚltima ubicación",...rows].join("\n");
+  try{await navigator.clipboard.writeText(txt);$("bCopy").textContent="Copiada";}catch(e){$("bCopy").textContent="No se pudo copiar";}setTimeout(()=>$("bCopy").textContent="Copiar lista",2000);};
 function pick(i,fly){sel=i;const u=S[i];if(u.pos){if(fly)map.setView([u.pos.y,u.pos.x],15);u.mk&&u.mk.openPopup();}draw();}
 $("bFit").onclick=fit;
 async function cycle(){
   const q=[...S];const run=async()=>{while(q.length){await poll(q.shift());}};
-  await Promise.all([run(),run(),run(),run()]);draw();if(geoOn)loadGeo();
+  await Promise.all(Array.from({length:6},run));draw();if(geoOn)loadGeo();
 }
 $("bRef").onclick=cycle;
 /* ---------- geocercas (las comparte cada enlace del Localizador) ---------- */
@@ -198,7 +226,7 @@ async function loadGeo(){
 }
 $("bGeo").onclick=()=>{geoOn=!geoOn;$("bGeo").classList.toggle("on",geoOn);$("bGeo").setAttribute("aria-pressed",geoOn);if(geoOn){geoLayer.addTo(map);loadGeo();}else map.removeLayer(geoLayer);};
 if(!S.length){$("sub").textContent="Este enlace no trae unidades. Ábrelo desde el botón del dashboard de programación.";}
-else{draw();cycle();setInterval(cycle,REFRESH);}
+else{draw();cycle();setInterval(cycle,REF);}
 </script>
 </body>
 </html>
