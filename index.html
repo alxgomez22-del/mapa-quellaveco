@@ -93,9 +93,35 @@ $("bSat").onclick=()=>{satOn=!satOn;if(satOn){map.removeLayer(osm);sat.addTo(map
 const S=U.map(u=>({...u,sid:null,pos:null,err:"",mk:null,nm:""}));
 let fitted=false,sel=-1;
 
+/* Conexión con Wialon a través de su puente oficial (post.html), igual que su SDK:
+   así el navegador permite hablar con Wialon desde otro sitio. */
+const BRIDGE="https://hst-api.wialon.com/wialon/post.html";
+const BR={io:null,ready:false,queue:[],cb:{},n:0};
+function bridgeInit(){
+  return new Promise((res,rej)=>{
+    const io=document.createElement("iframe");io.style.display="none";io.src=BRIDGE;BR.io=io;
+    const to=setTimeout(()=>rej(new TypeError("bridge timeout")),12000);
+    window.addEventListener("message",ev=>{
+      let d;try{d=typeof ev.data==="string"?JSON.parse(ev.data):ev.data;}catch(e){return;}
+      if(!d||d.source!==BRIDGE)return;
+      if(!d.id){if(!BR.ready){BR.ready=true;clearTimeout(to);res();}return;}
+      const c=BR.cb[d.id];if(!c)return;delete BR.cb[d.id];
+      let t=d.text;if(typeof t==="string"){try{t=JSON.parse(t);}catch(e){}}
+      if(t&&t.error===1003&&c.tries<3){c.tries++;BR.cb[d.id]=c;setTimeout(()=>BR.io.contentWindow.postMessage(c.msg,BRIDGE),400+Math.random()*800);return;}
+      if(d.error){c.rej(new TypeError("bridge error"));}else c.res(t);
+    });
+    io.onload=()=>{io.contentWindow.postMessage(JSON.stringify({id:0,source:BRIDGE}),BRIDGE);};
+    document.body.appendChild(io);
+  });
+}
+let bridgeP=null;
 async function call(svc,params,sid){
-  const body=new URLSearchParams({svc,params:JSON.stringify(params)});if(sid)body.set("sid",sid);
-  const r=await fetch(API,{method:"POST",body});const j=await r.json();
+  if(!bridgeP)bridgeP=bridgeInit();
+  await bridgeP;
+  const id=++BR.n;
+  const qs="params="+encodeURIComponent(JSON.stringify(params))+(sid?"&sid="+encodeURIComponent(sid):"");
+  const msg=JSON.stringify({id,url:"/wialon/ajax.html?svc="+svc,params:qs,source:BRIDGE});
+  const j=await new Promise((res,rej)=>{BR.cb[id]={res,rej,msg,tries:0};BR.io.contentWindow.postMessage(msg,BRIDGE);setTimeout(()=>{if(BR.cb[id]){delete BR.cb[id];rej(new TypeError("timeout"));}},20000);});
   if(j&&j.error){const e=new Error("Wialon error "+j.error);e.code=j.error;throw e;}
   return j;
 }
