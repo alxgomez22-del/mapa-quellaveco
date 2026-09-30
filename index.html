@@ -44,6 +44,8 @@ button:focus-visible{outline:2px solid var(--yellow);outline-offset:2px}
 .lbl{background:#0d1a36;color:#fff;border:2px solid var(--yellow);border-radius:4px;font:700 13px/1 var(--display);padding:3px 5px;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,.4)}
 .lbl.mov{border-color:var(--green)}.lbl.old{border-color:var(--grey);color:#c7cfdd}
 .leaflet-div-icon{background:none;border:0}
+.gz{font:600 12px var(--body);background:#0d1a36;color:#fff;border:1px solid var(--line);border-radius:4px;padding:2px 6px}
+.leaflet-tooltip.gz::before{display:none}
 @media (max-width:700px){
   .app{grid-template-columns:1fr;grid-template-rows:1fr 42%}
   aside{order:2;border-right:0;border-top:1px solid var(--line);padding-top:0;padding-bottom:env(safe-area-inset-bottom,0px)}
@@ -63,6 +65,7 @@ button:focus-visible{outline:2px solid var(--yellow);outline-offset:2px}
         <button id="bFit">Ver todas</button>
         <button id="bSat">Satélite</button>
         <button id="bRef">Actualizar</button>
+        <button id="bGeo" class="on" aria-pressed="true">Geocercas</button>
       </div>
       <div class="legend"><span><i class="dot mov"></i>En movimiento</span><span><i class="dot stop"></i>Detenida</span><span><i class="dot old"></i>Sin señal +15 min</span></div>
     </div>
@@ -166,9 +169,34 @@ function pick(i,fly){sel=i;const u=S[i];if(u.pos){if(fly)map.setView([u.pos.y,u.
 $("bFit").onclick=fit;
 async function cycle(){
   const q=[...S];const run=async()=>{while(q.length){await poll(q.shift());}};
-  await Promise.all([run(),run(),run(),run()]);draw();
+  await Promise.all([run(),run(),run(),run()]);draw();if(geoOn)loadGeo();
 }
 $("bRef").onclick=cycle;
+/* ---------- geocercas (las comparte cada enlace del Localizador) ---------- */
+const geoLayer=L.layerGroup().addTo(map);let geoOn=true,geoLoaded=false;
+const argb=c=>{c=c>>>0;const a=((c>>>24)&255)/255,r=(c>>>16)&255,g=(c>>>8)&255,b=c&255;return{col:`rgb(${r},${g},${b})`,a:a||0.5};};
+async function loadGeo(){
+  if(geoLoaded)return;const u=S.find(x=>x.sid);if(!u)return;geoLoaded=true;
+  try{
+    const r=await call("core/search_items",{spec:{itemsType:"avl_resource",propName:"sys_name",propValueMask:"*",sortType:"sys_name"},force:1,flags:1|4096,from:0,to:0},u.sid);
+    let n=0;
+    for(const res of (r.items||[])){
+      const zl=res.zl||{};const ids=Object.keys(zl).map(Number);if(!ids.length)continue;
+      let zones=Object.values(zl);
+      if(!zones.some(z=>z.p&&z.p.length)){
+        zones=[];for(let i=0;i<ids.length;i+=100){const part=await call("resource/get_zone_data",{itemId:res.id,col:ids.slice(i,i+100),flags:0x1C},u.sid);zones=zones.concat(part||[]);}
+      }
+      zones.forEach(z=>{if(!z.p||!z.p.length)return;const k=argb(z.c||0x8000a0ff);const st={color:k.col,weight:2,opacity:.9,fillColor:k.col,fillOpacity:Math.min(.35,k.a*.4)};
+        let lyr;
+        if(z.t===3)lyr=L.circle([z.p[0].y,z.p[0].x],{...st,radius:z.p[0].r||z.w||50});
+        else if(z.t===1)lyr=L.polyline(z.p.map(q=>[q.y,q.x]),{...st,weight:Math.max(2,Math.min(8,(z.w||10)/5))});
+        else lyr=L.polygon(z.p.map(q=>[q.y,q.x]),st);
+        lyr.bindTooltip(esc(z.n||"Geocerca"),{className:"gz",sticky:true});lyr.addTo(geoLayer);n++;});
+    }
+    $("bGeo").textContent=n?`Geocercas (${n})`:"Sin geocercas";
+  }catch(e){geoLoaded=false;$("bGeo").textContent="Geocercas (no cargaron)";}
+}
+$("bGeo").onclick=()=>{geoOn=!geoOn;$("bGeo").classList.toggle("on",geoOn);$("bGeo").setAttribute("aria-pressed",geoOn);if(geoOn){geoLayer.addTo(map);loadGeo();}else map.removeLayer(geoLayer);};
 if(!S.length){$("sub").textContent="Este enlace no trae unidades. Ábrelo desde el botón del dashboard de programación.";}
 else{draw();cycle();setInterval(cycle,REFRESH);}
 </script>
