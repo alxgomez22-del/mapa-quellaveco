@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mapa de grupo Quellaveco</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+/* Mapa a pantalla completa con lista lateral (abajo en celular) */
+:root{
+  --bg:#0d1a36; --panel:#132447; --ink:#e7ecf5; --muted:#9fb0cf; --line:#26396a;
+  --yellow:#ffd84a; --red:#ff5a62; --green:#3ecf8e; --grey:#8d98ab;
+  --display:"Barlow Condensed","Arial Narrow",Arial,sans-serif; --body:Barlow,"Segoe UI",Arial,sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 var(--body)}
+.app{display:grid;grid-template-columns:320px 1fr;height:100%}
+aside{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0;padding-top:env(safe-area-inset-top,0px)}
+.head{padding:14px 16px 10px;border-bottom:3px solid var(--red)}
+h1{font:700 22px/1.1 var(--display);margin:0;color:#fff}
+.sub{color:var(--muted);font-size:13px;margin-top:4px}
+.bar{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+button{font:600 13px var(--body);border:1px solid var(--line);background:transparent;color:var(--ink);border-radius:6px;padding:5px 10px;cursor:pointer}
+button.on{background:var(--yellow);color:#15213a;border-color:var(--yellow)}
+button:focus-visible{outline:2px solid var(--yellow);outline-offset:2px}
+.list{overflow-y:auto;flex:1;padding:6px 8px 16px}
+.u{display:grid;grid-template-columns:12px 1fr auto;gap:4px 10px;align-items:center;padding:8px;border-radius:8px;cursor:pointer;border:1px solid transparent}
+.u:hover,.u.sel{background:rgba(255,255,255,.06);border-color:var(--line)}
+.dot{width:12px;height:12px;border-radius:50%;background:var(--grey)}
+.dot.mov{background:var(--green)}.dot.stop{background:var(--yellow)}.dot.old{background:var(--grey)}.dot.err{background:var(--red)}
+.pl{font:700 18px/1 var(--display);color:#fff}
+.st{font-size:12px;color:var(--muted);grid-column:2/4}
+.sp{font:600 13px var(--display);color:var(--muted);text-align:right}
+.msg{margin:8px 12px;padding:8px 10px;border-radius:6px;background:rgba(255,90,98,.12);color:#ffc9cc;font-size:13px}
+.msg a{color:#fff}
+#map{height:100%;width:100%;background:#0a1430}
+.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:8px}
+.legend span{display:flex;align-items:center;gap:5px}
+.lbl{background:#0d1a36;color:#fff;border:2px solid var(--yellow);border-radius:4px;font:700 13px/1 var(--display);padding:3px 5px;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,.4)}
+.lbl.mov{border-color:var(--green)}.lbl.old{border-color:var(--grey);color:#c7cfdd}
+.leaflet-div-icon{background:none;border:0}
+@media (max-width:700px){
+  .app{grid-template-columns:1fr;grid-template-rows:1fr 42%}
+  aside{order:2;border-right:0;border-top:1px solid var(--line);padding-top:0;padding-bottom:env(safe-area-inset-bottom,0px)}
+  main{order:1;padding-top:env(safe-area-inset-top,0px)}
+  .head{padding:10px 14px 8px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="head">
+      <h1 id="title">Mapa de grupo</h1>
+      <div class="sub" id="sub">Cargando unidades…</div>
+      <div class="bar">
+        <button id="bFit">Ver todas</button>
+        <button id="bSat">Satélite</button>
+        <button id="bRef">Actualizar</button>
+      </div>
+      <div class="legend"><span><i class="dot mov"></i>En movimiento</span><span><i class="dot stop"></i>Detenida</span><span><i class="dot old"></i>Sin señal +15 min</span></div>
+    </div>
+    <div id="msgs"></div>
+    <div class="list" id="list"></div>
+  </aside>
+  <main><div id="map"></div></main>
+</div>
+<script>
+/* Enlace esperado: .../#u=PLACA~TOKEN,PLACA~TOKEN&n=Nombre del grupo
+   Los TOKEN son los de los enlaces del Localizador por unidad (solo lectura, solo posición). */
+const API="https://hst-api.wialon.com/wialon/ajax.html";
+const REFRESH=20000, OLD=15*60;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function readHash(){
+  const h=new URLSearchParams(location.hash.replace(/^#/,""));
+  const units=(h.get("u")||"").split(",").map(x=>x.split("~")).filter(a=>a[0]&&a[1]).map(([p,t])=>({p:p.trim(),t:t.trim()}));
+  return {units,name:h.get("n")||""};
+}
+const {units:U,name}=readHash();
+if(name){$("title").textContent=name;document.title=name;}
+const map=L.map("map",{zoomControl:true}).setView([-17.1,-70.9],9);
+const osm=L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap"}).addTo(map);
+const sat=L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"Esri"});
+let satOn=false;
+$("bSat").onclick=()=>{satOn=!satOn;if(satOn){map.removeLayer(osm);sat.addTo(map);}else{map.removeLayer(sat);osm.addTo(map);}$("bSat").classList.toggle("on",satOn);};
+const S=U.map(u=>({...u,sid:null,pos:null,err:"",mk:null,nm:""}));
+let fitted=false,sel=-1;
+
+async function call(svc,params,sid){
+  const body=new URLSearchParams({svc,params:JSON.stringify(params)});if(sid)body.set("sid",sid);
+  const r=await fetch(API,{method:"POST",body});const j=await r.json();
+  if(j&&j.error){const e=new Error("Wialon error "+j.error);e.code=j.error;throw e;}
+  return j;
+}
+async function login(u){const r=await call("token/login",{token:u.t,fl:1});u.sid=r.eid;}
+async function poll(u){
+  try{
+    if(!u.sid)await login(u);
+    let r;
+    try{r=await call("core/search_items",{spec:{itemsType:"avl_unit",propName:"sys_name",propValueMask:"*",sortType:"sys_name"},force:1,flags:1025,from:0,to:0},u.sid);}
+    catch(e){if(e.code===1){u.sid=null;await login(u);r=await call("core/search_items",{spec:{itemsType:"avl_unit",propName:"sys_name",propValueMask:"*",sortType:"sys_name"},force:1,flags:1025,from:0,to:0},u.sid);}else throw e;}
+    const it=(r.items||[])[0];
+    if(!it){u.err="El enlace no trae la unidad";return;}
+    u.nm=it.nm||"";u.pos=it.pos||null;u.err=u.pos?"":"Sin posición registrada";
+  }catch(e){u.err=e.code===4||e.code===7?"El enlace del Localizador ya no es válido":(e instanceof TypeError?"No se pudo conectar con Wialon":"Error "+(e.code||""));}
+}
+const stateOf=u=>{if(u.err||!u.pos)return"err";const age=Date.now()/1000-u.pos.t;if(age>OLD)return"old";return u.pos.s>3?"mov":"stop";};
+const ago=t=>{const s=Math.max(0,Math.round(Date.now()/1000-t));if(s<60)return`hace ${s} s`;if(s<3600)return`hace ${Math.round(s/60)} min`;if(s<86400)return`hace ${Math.round(s/3600)} h`;return`hace ${Math.round(s/86400)} d`;};
+function draw(){
+  const pts=[];
+  S.forEach((u,i)=>{
+    const st=stateOf(u);
+    if(u.pos){const ll=[u.pos.y,u.pos.x];pts.push(ll);
+      const html=`<div class="lbl ${st}">${esc(u.p)}</div>`;
+      const icon=L.divIcon({html,className:"",iconSize:null,iconAnchor:[20,10]});
+      if(!u.mk){u.mk=L.marker(ll,{icon}).addTo(map);u.mk.on("click",()=>pick(i,false));}
+      else{u.mk.setLatLng(ll);u.mk.setIcon(icon);}
+      u.mk.bindPopup(`<b>${esc(u.p)}</b><br>${esc(u.nm)}<br>${u.pos.s} km/h, ${ago(u.pos.t)}<br><a href="https://www.google.com/maps?q=${u.pos.y},${u.pos.x}" target="_blank" rel="noopener">Abrir en Google Maps</a>`);
+    }
+  });
+  $("list").innerHTML=S.map((u,i)=>{const st=stateOf(u);
+    const txt=u.err?esc(u.err):u.pos?`${st==="mov"?"En movimiento":st==="stop"?"Detenida":"Sin señal"}, ${ago(u.pos.t)}`:"Cargando…";
+    return `<div class="u${i===sel?" sel":""}" data-i="${i}" tabindex="0" role="button"><i class="dot ${u.pos||u.err?st:""}"></i><div class="pl">${esc(u.p)}</div><div class="sp">${u.pos&&!u.err?u.pos.s+" km/h":""}</div><div class="st">${txt}</div></div>`;}).join("");
+  $("list").querySelectorAll(".u").forEach(el=>{el.onclick=()=>pick(+el.dataset.i,true);el.onkeydown=e=>{if(e.key==="Enter")pick(+el.dataset.i,true);};});
+  const ok=S.filter(u=>u.pos&&!u.err).length,mov=S.filter(u=>stateOf(u)==="mov").length;
+  $("sub").textContent=`${S.length} unidad(es), ${ok} con posición, ${mov} en movimiento. Se actualiza cada 20 s (${new Date().toLocaleTimeString("es-PE",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}).`;
+  if(!fitted&&pts.length){fit();fitted=true;}
+  const conn=S.length&&S.every(u=>u.err==="No se pudo conectar con Wialon");
+  $("msgs").innerHTML=conn?`<div class="msg">No se pudo conectar con Wialon desde esta página. Revisa tu conexión; si sigue igual, avisa para ajustar la página.</div>`:"";
+}
+function fit(){const pts=S.filter(u=>u.pos).map(u=>[u.pos.y,u.pos.x]);if(!pts.length)return;if(pts.length===1)map.setView(pts[0],14);else map.fitBounds(pts,{padding:[40,40],maxZoom:15});}
+function pick(i,fly){sel=i;const u=S[i];if(u.pos){if(fly)map.setView([u.pos.y,u.pos.x],15);u.mk&&u.mk.openPopup();}draw();}
+$("bFit").onclick=fit;
+async function cycle(){
+  const q=[...S];const run=async()=>{while(q.length){await poll(q.shift());}};
+  await Promise.all([run(),run(),run(),run()]);draw();
+}
+$("bRef").onclick=cycle;
+if(!S.length){$("sub").textContent="Este enlace no trae unidades. Ábrelo desde el botón del dashboard de programación.";}
+else{draw();cycle();setInterval(cycle,REFRESH);}
+</script>
+</body>
+</html>
